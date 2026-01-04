@@ -1,0 +1,134 @@
+module Keyboard.Event exposing
+    ( KeyboardEvent
+    , decodeKeyboardEvent
+    , considerKeyboardEvent
+    , decodeKeyCode
+    , decodeKey
+    )
+
+{-|
+
+---
+
+@docs KeyboardEvent
+
+---
+
+@docs decodeKeyboardEvent
+
+---
+
+@docs considerKeyboardEvent
+
+---
+
+@docs decodeKeyCode
+
+---
+
+@docs decodeKey
+
+-}
+
+import Json.Decode as Decode exposing ( Decoder, andThen )
+import Keyboard.Key as Key exposing ( Key )
+import String
+
+
+{-| Decode `keyCode`, `which` or `charCode` from a keyboard event to get a numeric code for the key that was pressed.
+-}
+decodeKeyCode : Decoder Int
+decodeKeyCode =
+    Decode.oneOf
+        [ Decode.field "keyCode" decodeNonZero
+        , Decode.field "which" decodeNonZero
+        , Decode.field "charCode" decodeNonZero
+        , Decode.succeed 0
+        ]
+
+
+-- Decode an Int, but only if it's not zero.
+decodeNonZero : Decoder Int
+decodeNonZero =
+    Decode.int
+    |> andThen
+        ( \ code ->
+            if code == 0
+            then Decode.fail "code was zero"
+            else Decode.succeed code
+        )
+
+
+{-| Decode the `key` field from a keyboard event.
+
+Results in `Nothing` if the `key` field is not present, or blank.
+-}
+decodeKey : Decoder ( Maybe String )
+decodeKey =
+    Decode.field "key" Decode.string
+    |> andThen
+        ( \ key ->
+            if String.isEmpty key
+            then Decode.fail "empty key"
+            else Decode.succeed key
+        )
+    |> Decode.maybe
+
+
+{-| The `key` field may or may not be present, depending on the listener ("keydown" vs. "keypress" vs. "keyup"),
+browser, and key pressed (character key vs. special key). If not present, it will be `Nothing` here.
+
+The `keyCode` is normalized by `decodeKeyboardEvent` to use whichever of `which`, `keyCode` or `charCode` is
+provided, and made type-safe via `Keyboard.Key`.
+-}
+type alias KeyboardEvent =
+    { altKey : Bool
+    , ctrlKey : Bool
+    , key : Maybe String
+    , keyCode : Key
+    , metaKey : Bool
+    , repeat : Bool
+    , shiftKey : Bool
+    }
+
+
+{-| Decode a `KeyboardEvent` from a keyboard event.
+-}
+decodeKeyboardEvent : Decoder KeyboardEvent
+decodeKeyboardEvent =
+    Decode.map7
+        ( \ altKey ctrlKey key keyCode metaKey repeat shiftKey ->
+            { altKey = altKey
+            , ctrlKey = ctrlKey
+            , key = key
+            , keyCode = keyCode
+            , metaKey = metaKey
+            , repeat = repeat
+            , shiftKey = shiftKey
+            }
+        )
+        ( Decode.field "altKey" Decode.bool )
+        ( Decode.field "ctrlKey" Decode.bool )
+        decodeKey
+        ( Decode.map Key.fromInt decodeKeyCode )
+        ( Decode.field "metaKey" Decode.bool )
+        ( Decode.field "repeat" Decode.bool )
+        ( Decode.field "shiftKey" Decode.bool )
+
+
+{-| You provide a function which turns a `KeyboardEvent` into a message for your update function.
+You get back a `Decoder` for those messages.
+
+When your function returns `Nothing`, the event will not reach your update function.
+This allows you to filter keyboard events inside the decoder, rather than in the update function.
+Whether this is a good idea or not depends on your scenario.
+-}
+considerKeyboardEvent : ( KeyboardEvent -> Maybe msg ) -> Decoder msg
+considerKeyboardEvent func =
+    decodeKeyboardEvent
+    |> andThen
+        ( \ event ->
+            when func event is
+                Just msg -> Decode.succeed msg
+                Nothing -> Decode.fail "Ignoring keyboard event"
+        )
